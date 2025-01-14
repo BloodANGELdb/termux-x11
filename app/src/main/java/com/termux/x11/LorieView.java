@@ -24,7 +24,6 @@ import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
 import android.view.inputmethod.InputMethodManager;
-import android.view.inputmethod.InputMethodSubtype;
 
 import androidx.annotation.Keep;
 import androidx.annotation.NonNull;
@@ -32,8 +31,9 @@ import androidx.annotation.NonNull;
 import com.termux.x11.input.InputStub;
 import com.termux.x11.input.TouchInputHandler;
 
-import java.nio.charset.StandardCharsets;
 import java.util.regex.PatternSyntaxException;
+
+import static java.nio.charset.StandardCharsets.UTF_8;
 
 import dalvik.annotation.optimization.CriticalNative;
 import dalvik.annotation.optimization.FastNative;
@@ -54,11 +54,99 @@ public class LorieView extends SurfaceView implements InputStub {
     private static boolean clipboardSyncEnabled = false;
     private static boolean hardwareKbdScancodesWorkaround = false;
     private final InputMethodManager mIMM = (InputMethodManager)getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
-    private String mImeLang;
-    private boolean mImeCJK;
-    public boolean enableGboardCJK;
     private Callback mCallback;
     private final Point p = new Point();
+    boolean commitedText = false;
+    private final InputConnection mConnection = new BaseInputConnection(this, false) {
+        private final MainActivity a = MainActivity.getInstance();
+        private CharSequence currentComposingText = null;
+
+        // We can not inspect X windows and get currently edited text
+        // or even check if currently focused element in window is editable.
+        @Override public Editable getEditable() {
+            return null;
+        }
+
+        // Needed to send arrow keys with IME's cursor control feature
+        // Also gboard's word suggestions behave weird if there is no whitespace before cursor
+        // and it always tries to remove whitespace after word so we put there ASCII letter.
+        // Gboard stops suggesting words if it seens period after cursor.
+        // Also in the case of whitespace it tries to remove it with `deleteSurroundingText`
+        // so we can not use it here.
+        @Override public CharSequence getTextBeforeCursor(int length, int flags) { return " "; }
+        @Override public CharSequence getTextAfterCursor(int length, int flags) { return "a"; }
+        @Override public boolean setComposingRegion(int start, int end) { return true; }
+
+        void sendKey(int k) {
+            LorieView.this.sendKeyEvent(0, k, true);
+            LorieView.this.sendKeyEvent(0, k, false);
+        }
+
+        @Override public boolean deleteSurroundingText(int beforeLength, int afterLength) {
+            for (int i=0; i<beforeLength; i++) sendKey(KeyEvent.KEYCODE_DEL);
+            for (int i=0; i<afterLength; i++) sendKey(KeyEvent.KEYCODE_FORWARD_DEL);
+            return true;
+        }
+
+        /**
+         * X server itself does not provide any way to compose text.
+         * But we can simply send text we want and erase it in the case if user does not need it.
+         *
+         * @noinspection SameReturnValue*/
+        boolean replaceText(CharSequence newText, boolean reuse) {
+            int oldLen = currentComposingText != null ? currentComposingText.length() : 0;
+            int newLen = newText != null ? newText.length() : 0;
+            if (oldLen > 0 && newLen > 0 && (currentComposingText.toString().startsWith(newText.toString())
+                    || newText.toString().startsWith(currentComposingText.toString()))) {
+                for (int i=0; i < oldLen - newLen; i++)
+                    sendKey(KeyEvent.KEYCODE_DEL);
+                for (int i=oldLen; i<newLen; i++)
+                    sendTextEvent(String.valueOf(newText.charAt(i)).getBytes(UTF_8));
+            } else {
+                for (int i = 0; i < oldLen; i++)
+                    sendKey(KeyEvent.KEYCODE_DEL);
+                if (newText != null)
+                    sendTextEvent(newText.toString().getBytes(UTF_8));
+            }
+
+            currentComposingText = reuse ? newText : null;
+
+            if (a.useTermuxEKBarBehaviour && a.mExtraKeys != null)
+                a.mExtraKeys.unsetSpecialKeys();
+            commitedText = true;
+            return true;
+        }
+
+        public boolean setSelection(int start, int end) {
+            // Samsung keyboard moves cursor by sending DPAD directional key events.
+            // Gboard invokes `setSelection`. We should handle both ways.
+            if (start < 1)
+                sendKey(KeyEvent.KEYCODE_DPAD_LEFT);
+            else if (start > 1)
+                sendKey(KeyEvent.KEYCODE_DPAD_RIGHT);
+
+
+            mIMM.updateSelection(LorieView.this, -1, -1, -1, -1);
+            mIMM.updateSelection(LorieView.this, 1, 1, -1, -1);
+            return true;
+        }
+
+        @Override public boolean setComposingText(CharSequence text, int newCursorPosition) {
+            return replaceText(text, true);
+        }
+
+        @Override
+        public boolean commitText(CharSequence text, int newCursorPosition) {
+            return replaceText(text, false);
+        }
+
+        @Override
+        public boolean finishComposingText() {
+            // We do not implement real composing, so no need to finish it.
+            currentComposingText = null;
+            return true;
+        }
+    };
     private final SurfaceHolder.Callback mSurfaceCallback = new SurfaceHolder.Callback() {
         @Override public void surfaceCreated(@NonNull SurfaceHolder holder) {
             holder.setFormat(PixelFormat.BGRA_8888);
@@ -235,8 +323,6 @@ public class LorieView extends SurfaceView implements InputStub {
         clipboardSyncEnabled = p.clipboardEnable.get();
         setClipboardSyncEnabled(clipboardSyncEnabled, clipboardSyncEnabled);
         TouchInputHandler.refreshInputDevices();
-        enableGboardCJK = p.enableGboardCJK.get();
-        mIMM.restartInput(this);
     }
 
     // It is used in native code
@@ -252,14 +338,14 @@ public class LorieView extends SurfaceView implements InputStub {
     /** @noinspection unused*/ // It is used in native code
     void requestClipboard() {
         if (!clipboardSyncEnabled) {
-            sendClipboardEvent("".getBytes(StandardCharsets.UTF_8));
+            sendClipboardEvent("".getBytes(UTF_8));
             return;
         }
 
         CharSequence clip = clipboard.getText();
         if (clip != null) {
             String text = String.valueOf(clipboard.getText());
-            sendClipboardEvent(text.getBytes(StandardCharsets.UTF_8));
+            sendClipboardEvent(text.getBytes(UTF_8));
             Log.d("CLIP", "sending clipboard contents: " + text);
         }
     }
@@ -298,67 +384,32 @@ public class LorieView extends SurfaceView implements InputStub {
         TouchInputHandler.refreshInputDevices();
     }
 
-    public void checkRestartInput(boolean recheck) {
-        if (!enableGboardCJK)
-            return;
-
-        InputMethodSubtype methodSubtype = mIMM.getCurrentInputMethodSubtype();
-        String languageTag = methodSubtype == null ? null : methodSubtype.getLanguageTag();
-        if (languageTag != null && languageTag.length() >= 2 && !languageTag.substring(0, 2).equals(mImeLang))
-            mIMM.restartInput(this);
-        else if (recheck) { // recheck needed because sometimes requestCursorUpdates() is called too fast, before InputMethodManager detect change in IM subtype
-            MainActivity.handler.postDelayed(() -> checkRestartInput(false), 40);
-        }
-    }
-
     @Override
     public InputConnection onCreateInputConnection(EditorInfo outAttrs) {
-        outAttrs.inputType = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS | InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD;
-
+        outAttrs.inputType = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS | InputType.TYPE_TEXT_VARIATION_NORMAL;
+        outAttrs.actionLabel = "↵";
         // Note that IME_ACTION_NONE cannot be used as that makes it impossible to input newlines using the on-screen
         // keyboard on Android TV (see https://github.com/termux/termux-app/issues/221).
         outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_FULLSCREEN;
+        return mConnection;
+    }
 
-        if (enableGboardCJK) {
-            InputMethodSubtype methodSubtype = mIMM.getCurrentInputMethodSubtype();
-            mImeLang = methodSubtype == null ? null : methodSubtype.getLanguageTag();
-            if (mImeLang != null && mImeLang.length() > 2)
-                mImeLang = mImeLang.substring(0, 2);
-            mImeCJK = mImeLang != null && (mImeLang.equals("zh") || mImeLang.equals("ko") || mImeLang.equals("ja"));
-            outAttrs.inputType = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS |
-                    (mImeCJK ? InputType.TYPE_TEXT_VARIATION_NORMAL : InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD);
-            return new BaseInputConnection(this, false) {
-                // workaround for Gboard
-                // Gboard calls requestCursorUpdates() whenever switching language
-                // check and then restart keyboard in different inputType when needed
-                @Override
-                public Editable getEditable() {
-                    checkRestartInput(true);
-                    return super.getEditable();
-                }
-                @Override
-                public boolean requestCursorUpdates(int cursorUpdateMode) {
-                    checkRestartInput(true);
-                    return super.requestCursorUpdates(cursorUpdateMode);
-                }
+    /**
+     * Unfortunately there is no direct way to focus inside X windows.
+     * As a workaround we will reset IME on X window focus change and any user interaction
+     * with LorieView except sending keys, text (Unicode) and mouse movements.
+     * We must reset IME to get rid of pending composing, predictive text and other status related stuff.
+     * It is called from native code, not from Java.
+     * @noinspection unused
+     */
+    @Keep void resetIme() {
+        if (!commitedText)
+            return;
 
-                @Override
-                public boolean commitText(CharSequence text, int newCursorPosition) {
-                    boolean result = super.commitText(text, newCursorPosition);
-                    if (mImeCJK)
-                        // suppress Gboard CJK keyboard suggestion
-                        // this workaround does not work well for non-CJK keyboards
-                        // , when typing fast and two keypresses (commitText) are close in time
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
-                            mIMM.invalidateInput(LorieView.this);
-                        else
-                            mIMM.restartInput(LorieView.this);
-                    return result;
-                }
-            };
-        } else {
-            return super.onCreateInputConnection(outAttrs);
-        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
+            mIMM.invalidateInput(this);
+        else
+            mIMM.restartInput(this);
     }
 
     static native boolean renderingInActivity();

@@ -90,7 +90,7 @@ public class MainActivity extends AppCompatActivity implements View.OnApplyWindo
     private static boolean externalKeyboardConnected = false;
     private View.OnKeyListener mLorieKeyListener;
     private boolean filterOutWinKey = false;
-    private boolean useTermuxEKBarBehaviour = false;
+    boolean useTermuxEKBarBehaviour = false;
     private boolean isInPictureInPictureMode = false;
 
     public static Prefs prefs = null;
@@ -232,7 +232,6 @@ public class MainActivity extends AppCompatActivity implements View.OnApplyWindo
         onPreferencesChanged("");
 
         toggleExtraKeys(false, false);
-        checkRestartInput();
 
         initStylusAuxButtons();
         initMouseAuxButtons();
@@ -877,15 +876,6 @@ public class MainActivity extends AppCompatActivity implements View.OnApplyWindo
             return false;
 
         return LorieView.connected();
-    }
-
-    private void checkRestartInput() {
-        // an imperfect workaround for Gboard CJK keyboard in DeX soft keyboard mode
-        // in that particular mode during language switching, InputConnection#requestCursorUpdates() is not called and no signal can be picked up. 
-        // therefore, check to activate CJK keyboard is done upon a keypress.  
-        if (getLorieView().enableGboardCJK && SamsungDexUtils.checkDeXEnabled(this))
-            getLorieView().checkRestartInput(false);
-        handler.postDelayed(this::checkRestartInput, 300);
     }
 
     public static void getRealMetrics(DisplayMetrics m) {
