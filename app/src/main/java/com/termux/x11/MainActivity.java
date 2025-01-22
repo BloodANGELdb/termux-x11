@@ -73,6 +73,71 @@ import java.util.Map;
 
 @SuppressLint("ApplySharedPref")
 @SuppressWarnings({"deprecation", "unused"})
+
+    private float cpuTemperature = 0.0f; // Переменная для хранения температуры процессора
+    private final Paint temperaturePaint = new Paint(); // Кисть для текста температуры
+    private final Handler handler = new Handler(Looper.getMainLooper());
+
+    /**
+     * Инициализация логики отображения температуры.
+     */
+    private void initCpuTemperatureDisplay() {
+        temperaturePaint.setTextSize(50); // Устанавливаем размер текста
+        updateCpuTemperature(); // Инициализируем обновление температуры процессора
+    }
+
+    /**
+     * Метод для обновления температуры процессора.
+     */
+    private void updateCpuTemperature() {
+        handler.postDelayed(() -> {
+            cpuTemperature = getCpuTemperature();
+            updateCpuTemperature();
+        }, 1000); // Обновляем температуру каждые 1 секунду
+    }
+
+    /**
+     * Получение температуры процессора.
+     *
+     * @return Температура процессора в градусах Цельсия.
+     */
+    private float getCpuTemperature() {
+        String tempPath = "/sys/class/thermal/thermal_zone0/temp";
+        try (BufferedReader reader = new BufferedReader(new FileReader(tempPath))) {
+            String line = reader.readLine();
+            if (line != null) {
+                return Float.parseFloat(line) / 1000.0f; // Преобразуем в градусы Цельсия
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        return 0.0f; // Возвращаем 0.0 в случае ошибки
+    }
+
+    /**
+     * Метод для отображения температуры процессора на экране.
+     *
+     * @param canvas Канва для рендеринга.
+     */
+    private void renderCpuTemperature(Canvas canvas) {
+        String tempText = "CPU Temp: " + cpuTemperature + "°C";
+
+        // Устанавливаем цвет текста в зависимости от температуры
+        if (cpuTemperature > 70) {
+            temperaturePaint.setColor(Color.RED);
+        } else if (cpuTemperature > 50) {
+            temperaturePaint.setColor(Color.YELLOW);
+        } else if (cpuTemperature > 40) {
+            temperaturePaint.setColor(Color.GREEN);
+        } else {
+            temperaturePaint.setColor(Color.CYAN);
+        }
+
+        // Рисуем текст в верхнем левом углу
+        canvas.drawText(tempText, 10, 60, temperaturePaint);
+    }
+
+
 public class MainActivity extends AppCompatActivity implements View.OnApplyWindowInsetsListener {
     public static final String ACTION_STOP = "com.termux.x11.ACTION_STOP";
     public static final String ACTION_CUSTOM = "com.termux.x11.ACTION_CUSTOM";
@@ -141,6 +206,7 @@ public class MainActivity extends AppCompatActivity implements View.OnApplyWindo
     @Override
     @SuppressLint({"AppCompatMethod", "ObsoleteSdkInt", "ClickableViewAccessibility", "WrongConstant", "UnspecifiedRegisterReceiverFlag"})
     protected void onCreate(Bundle savedInstanceState) {
+        initCpuTemperatureDisplay();
         super.onCreate(savedInstanceState);
 
         prefs = new Prefs(this);
@@ -920,3 +986,10 @@ public class MainActivity extends AppCompatActivity implements View.OnApplyWindo
         getLorieView().requestFocus();
     }
 }
+
+    @Override
+    protected void onDraw(Canvas canvas) {
+        super.onDraw(canvas);
+        renderCpuTemperature(canvas); // Рисуем температуру процессора
+    }
+    
